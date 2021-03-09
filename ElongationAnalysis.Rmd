@@ -28,20 +28,18 @@ linPitch - pitch of fault lineations, clockwise from fault strike (RHR). If you 
 
 You will need two files ready. One file where the first and last faults of your transect, the ends or bounding faults, each have an offset of 0 (named Data). The bounding faults should have no offset when estimating elongation to avoid bias. Create a second file with all fault data that includes the offsets from the bounding faults (named DataEnds).
 
-In this first chunk of code, set your working directory, load the following packages, and load the two data files. The following code uses an example data set. If you are using your own data, make sure to change the code in this first chunk! 
+In this first chunk of code (make sure to set your working directory) load the following packages, and load the two data files. The following code uses an example data set. If you are using your own data, make sure to change the code in this first chunk! 
 
 ```{r Setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-
-setwd("~/Research/Statistics/R Code")
 
 library(gdata)
 library(stringr)
 library(dplyr)
 library(ggplot2)
 
-Data <- read.xls("Guat Data/TestData.xls") # For other file types, you can use: Data <- read.table("FILE.txt") OR Data <- read.csv("FILE.csv")
-DataEnds <- read.xls("Guat Data/TestData.xls")
+Data <- read.xls("Data/TestData.xls") # For other file types, you can use: Data <- read.table("FILE.txt") OR Data <- read.csv("FILE.csv")
+DataEnds <- read.xls("Data/TestDatab.xls")
 
 ```
 
