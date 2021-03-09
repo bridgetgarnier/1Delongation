@@ -1,0 +1,347 @@
+---
+title: 'Elongation Analysis: 1-D strain'
+author: "Bridget Garnier"
+date: "2/23/2021"
+output: html_document
+---
+#1-D strain method
+
+This code and explanation will walk you through a method of estimating 1-D strain or elongation given a series of faults collected along a transect of measured length. This method tackles two problems of estimating strain: 1) When a geologist measures a fault and fault offset along a roadcut or outcrop, they are often measuring apparent offset since it is rare for the outcrop surface to be parallel to the fault slip direction. Apparent offsets will not estimate elongation correctly. 2) Studies have shown that small, unobservable faults can contribute up to 60% of the total elongation (Walsh et al., 1991). Only using data from observable faults will not estimate elongation correctly. Therefore, this method of elongation estimation determines the maximum elongation direction for a fault set, calculates true offsets for each fault, and includes the effect from small, unobservable faults. 
+
+This method goes through the following process using a series of faults gathered along a measured transect to determine the direction of maximum elongation and estimate the amount of elongation: 1) Determine the orientation that results in the greatest added length - the direction of maximum elongation, following method from Titus et al., (2007); 2) Calculate true fault offsets, following equations from Xu et al., 2007 & Xu et al., 2009; 3) Project true fault heaves onto the maximum elongation direction; 4) Sum heaves to determine the amount of added length along the maximum elongation direction; 5) Determine added length from small faults following Gross & Engelder (1995); and 6) Sum fault heaves from large and small faults and estimate elongation. 
+
+This method could also work for reverse and/or oblique faults, but you will need to be aware of signs whether faults are adding length (normal faults->positive offsets) or subtracting length (reverse faults->negative offsets).
+
+# Data set up
+
+Before using this code, make sure you have the right data in the correct format! You will need the following data and with these *specific* column headings (make sure headings are exactly as they appear below):
+strike -  strike of fault planes from 000-360.
+dip - dip of fault planes from 00-90.
+offset - fault offset in meters.
+number - number the faults from 1 to N.
+dipDirection - azimuth of dip direction from 000-360. This should be 90deg clockwise from your strike, OR this is the trend of fault movement/striation lineation for non-downdip fault movement. 
+bedding - strike of bedding or marker plane. You must have at least 1 bedding/marker plane measurement per transect, more if bedding is variable. You can use the same measurement for all faults, but each row must be filled.
+beddingDip - dip of bedding or marker plane using using right hand rule (RHR).
+scanline - azimuth of transect containing faults, from 000-360.
+linPitch - pitch of fault lineations, clockwise from fault strike (RHR). If you are assuming down-dip movement, simply put 90. 
+
+
+You will need two files ready. One file where the first and last faults of your transect, the ends or bounding faults, each have an offset of 0 (named Data). The bounding faults should have no offset when estimating elongation to avoid bias. Create a second file with all fault data that includes the offsets from the bounding faults (named DataEnds).
+
+In this first chunk of code, set your working directory, load the following packages, and load the two data files. The following code uses an example data set. If you are using your own data, make sure to change the code in this first chunk! 
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("~/Research/Statistics/R Code")
+
+library(gdata)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+
+Data <- read.xls("Guat Data/TestData.xls") # For other file types, you can use: Data <- read.table("FILE.txt") OR Data <- read.csv("FILE.csv")
+DataEnds <- read.xls("Guat Data/TestData.xls")
+
+```
+
+# Functions
+
+There are a few functions that we need to estimate elongation. A brief explanation of each one is below. Run the next chunk of code to load all the functions. 
+
+acuteAngle: This function calculates the acute angle between two strikes. For strikes where one plane is 90-270 deg clockwise of another plane, 180deg must be subtracted from difference to find the acute angle. Additionally for these planes, the dip requires a negative sign (performed with the next function). 
+
+adjDip: This function creates a new column of bedding dips and gives a negative dip sign to the appropriate planes (those whose strikes are 90-270deg clockwise from the fault plane). 
+
+pitchOnPlane: This function determines the pitch of an inclined plane on another plane (based on equations from Xu et al., 2007; 2009), i.e. the pitch of bedding on a fault plane, the pitch of an observation line on a fault plane, etc. a=fault dip, t=bedding dip, u=acute angle between bedding and fault strikes
+
+trueDisplacement: This function calculates true displacement according to Xu et al., 2007; 2009. This function handles all different plane orientation scenarios. g=gamma(slickenside pitch angle); b=beta(bedding pitch angle); p=phi(observation line pitch); Sm=measured displacement. All pitch angles are on the fault plane, clockwise from the fault strike (RHR).
+
+appDisplacement: This function calculates apparent displacement along a scanline (based on equations from Xu et al., 2007; 2009), given the true displacement. g=gamma(slickenside pitch angle); b=beta(bedding pitch angle); p=phi(observation line pitch); S=true displacement
+
+```{r Functions}
+# f= fault plane strike; x= secondary plane strike (bedding or marker plane)
+acuteAngle <- function(f, x) {
+  f = as.double(f)
+  x = as.double(x)
+  res = case_when(
+    between(x-f,0,90) ~ x-f,
+    between(x-f,90,180) ~ x-f-180,
+    between(x-f,180,270) ~ x-f-180,
+    between(x-f,270,360) ~ x-f-360,
+    between(x-f,-90,-1) ~ x-f,
+    between(x-f,-180,-90) ~ x-f+180,
+    between(x-f,-270,-180) ~ x-f+180,
+    between(x-f,-360,-270) ~ x-f+360
+  )
+  return(res)
+  }
+
+# f= fault plane strike; x= secondary plane strike (bedding or marker plane); d= secondary plane dip (bedding or marker plane)
+adjDip <- function(f, x, d) {
+  f = as.double(f)
+  x = as.double(x)
+  d = as.double(d)
+  res = case_when(
+    between(x-f,0,90) ~ d,
+    between(x-f,90,270) ~ -d,
+    between(x-f,270,360) ~ d,
+    between(x-f,-90,-1) ~ d,
+    between(x-f,-270,-90) ~ -d,
+    between(x-f,-360,-270) ~ d
+  )
+  return(res)
+}
+
+# a=fault dip, t=bedding dip, u=acute angle between bedding and fault strikes
+pitchOnPlane <- function(a = a, t = t, u = u) {
+  (atan((sin(u*pi/180)*tan(a*pi/180)*tan(t*pi/180))/(sin(a*pi/180)*(tan(t*pi/180)*cos(u*pi/180)-tan(a*pi/180))))*180)/pi}
+
+# g=gamma(slickenside pitch angle); b=beta(bedding pitch angle); p=phi(observation line pitch); Sm=measured displacement
+trueDisplacement <- function(g, b, p, Sm){
+  if ((sign(g) != sign(b)) & (sign(p) == sign(g))) {
+    return((Sm*sin((abs(p)*pi/180)+(abs(b)*pi/180)))/sin((abs(g)*pi/180)+(abs(b)*pi/180)))}
+  if ((sign(g) != sign(b)) & (sign(p) != sign(g)) & (abs(p)>abs(b))) {
+    return((Sm*sin((abs(p)*pi/180)-(abs(b)*pi/180)))/sin((abs(g)*pi/180)+(abs(b)*pi/180)))}
+  if ((sign(g) != sign(b)) & (sign(p) != sign(g)) & (abs(b)>abs(p))) {
+    return((Sm*sin((abs(b)*pi/180)-(abs(p)*pi/180)))/sin((abs(g)*pi/180)+(abs(b)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) == sign(g)) & (abs(p)>abs(b))) {
+    return((Sm*sin((abs(p)*pi/180)-(abs(b)*pi/180)))/sin((abs(b)*pi/180)-(abs(g)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) == sign(g)) & (abs(b)>abs(p))) {
+    return((Sm*sin((abs(b)*pi/180)-(abs(p)*pi/180)))/sin((abs(b)*pi/180)-(abs(g)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) != sign(g))) {
+    return((Sm*sin((abs(p)*pi/180)+(abs(b)*pi/180)))/sin((abs(b)*pi/180)-(abs(g)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) == sign(g)) & (abs(p)>abs(b))) {
+    return((Sm*sin((abs(p)*pi/180)-(abs(b)*pi/180)))/sin((abs(g)*pi/180)-(abs(b)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) == sign(g)) & (abs(b)>abs(p))) {
+    return((Sm*sin((abs(b)*pi/180)-(abs(p)*pi/180)))/sin((abs(g)*pi/180)-(abs(b)*pi/180)))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) != sign(g))) {
+    return((Sm*sin((abs(p)*pi/180)+(abs(b)*pi/180)))/sin((abs(g)*pi/180)-(abs(b)*pi/180)))}
+}
+
+# g=gamma(slickenside pitch angle); b=beta(bedding pitch angle); p=phi(observation line pitch); S=true displacement
+appDisplacement <- function(g, b, p, S){
+  if ((sign(g) != sign(b)) & (sign(p) == sign(g))) {
+    return((S*sin((abs(g)*pi/180)+(abs(b)*pi/180))/sin((abs(p)*pi/180)+(abs(b)*pi/180))))}
+  if ((sign(g) != sign(b)) & (sign(p) != sign(g)) & (abs(p)>abs(b))) {
+    return((S*sin((abs(g)*pi/180)+(abs(b)*pi/180))/sin((abs(p)*pi/180)-(abs(b)*pi/180))))}
+  if ((sign(g) != sign(b)) & (sign(p) != sign(g)) & (abs(b)>abs(p))) {
+    return((S*sin((abs(g)*pi/180)+(abs(b)*pi/180))/sin((abs(b)*pi/180)-(abs(p)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) == sign(g)) & (abs(p)>abs(b))) {
+    return((S*sin((abs(b)*pi/180)-(abs(g)*pi/180))/sin((abs(p)*pi/180)-(abs(b)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) == sign(g)) & (abs(b)>abs(p))) {
+    return((S*sin((abs(b)*pi/180)-(abs(g)*pi/180))/sin((abs(b)*pi/180)-(abs(p)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(b)>abs(g)) & (sign(p) != sign(g))) {
+    return((S*sin((abs(b)*pi/180)-(abs(g)*pi/180))/sin((abs(p)*pi/180)+(abs(b)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) == sign(g)) & (abs(p)>abs(b))) {
+    return((S*sin((abs(g)*pi/180)-(abs(b)*pi/180))/sin((abs(p)*pi/180)-(abs(b)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) == sign(g)) & (abs(b)>abs(p))) {
+    return((S*sin((abs(g)*pi/180)-(abs(b)*pi/180))/sin((abs(b)*pi/180)-(abs(p)*pi/180))))}
+  if ((sign(g) == sign(b)) & (abs(g)>abs(b)) & (sign(p) != sign(g))) {
+    return((S*sin((abs(g)*pi/180)-(abs(b)*pi/180))/sin((abs(p)*pi/180)+(abs(b)*pi/180))))}
+}
+```
+
+## Maximum elongation direction
+
+The orientation of maximum elongation can be found by plotting the average apparent offsets (apparent offset/total offset) for each azimuth (explained in Titus et al., 2007). The peak of the curve will show you the orientation that maximizes apparent offsets (closest to true, total offset), which is the maximum elongation orientation. The code then sorts the azimuths, which will give you the azimuth with the highest average. 
+
+Run the next code chunk and view the apparent offset by azimuth curve. The code will also print the azimuth with the largest average apparent offsets, the maximum elongation orientation (a###). Record this azimuth and insert the value in the subsequent code chunk (Elongation 1).
+
+
+```{r Max Elong 1}
+#Find direction of max elongation. Loop to create a column for each azimuth and then calculate the apparent offset for each fault, for each azimuth: cosine(dipdirection - azimuth). We assume slip is downdip = dip direction, but this could be changed by creating a new column of slip direction azimuth and using that instead of dipDirection. 
+ss <- seq(from=0, to=180, by=1) 
+for(i in 1:length(ss)){
+  Data[,paste0("a",str_pad(ss[i],3,pad = "0"))] <- abs(cos((Data$dipDirection-ss[i])*pi/180))
+}
+
+MaxElong <- Data[,c(10:190)] #This command focuses on the 181 columns that were added to your dataframe in the previous step. Make sure the c(#:#) are correct in your dataframe.
+Averages <- colMeans(MaxElong) #Averages the apparent offsets for each azimuth
+plot(1:181, Averages, main = "Location X", xlab = "Azimuth", ylab = "Average happ/htot", ylim = c(0,1), xlim = c(1,181), pch = 16, cex = 0.5) #Plots the average apparent offsets per azimuth to determine the orientation of maximum elongation, which is the orientation with the greatest apparent offset.
+
+Ome <- sort(Averages, decreasing=TRUE) #Sorts apparent offsets from highest to lowest, the first azimuth (a###) is the orientation of maximum elongation. 
+print(Ome[1])
+Datab <- Data[,c(1:9)] #creates new dataframe without all the azimuth data
+
+```
+
+To maximize elongations, we should only use fault planes with strikes within +-25 deg of the maximum elongation orientation. Determine what fault planes to use by hand and enter the rows into the following line of code to create a new data frame to estimate elongation.
+
+```{r Max Elong 2}
+#Filter data for strikes +- 25 deg of the max elongation orientation. You have to do this by hand. Within c(), put all the rows that fall within +- 25dg of max elong.
+Dataelong <- Datab[c(1,5,6,8,11:25),]
+
+```
+
+## Estimate elongation
+
+The following chunk of code transforms the given data to: 
+- Calculate the true displacement along each fault;
+- Project true displacement onto the maximum elongation orientation and calculate the related heave; and
+- Sum heaves to calculate the total length added from faulting (dF).
+
+You need to enter the maximum elongation azimuth (x) in line 193! Then run the code.
+
+```{r Elongation 1, echo=TRUE}
+#Calculate acute angles
+Dataelong$acuteAngleBed <- acuteAngle(f=Dataelong$strike, x=Dataelong$bedding) # Calculate acute angle between fault and bedding planes
+Dataelong$bDipAdj <- adjDip(f=Dataelong$strike, x=Dataelong$bedding, d=Dataelong$beddingDip) # Correct bedding dip sign
+Dataelong$acuteAngleScanT <- acuteAngle(f=Dataelong$strike, x=Dataelong$scanline) # Calculate acute angle between fault and scanline/transect orientation
+Dataelong$acuteAngleMET <- acuteAngle(f=Dataelong$strike, x=112) # Calculate acute angle between fault plane and orientation of maximum elongation (make sure you insert your max elong for x)
+#Calculate pitch of bedding plane projected onto the fault plane. 
+Dataelong$beddingPitch <- pitchOnPlane(a=Dataelong$dip, t=Dataelong$bDipAdj, u=Dataelong$acuteAngleBed)
+#Pitch of scanline onto fault plane surface. t=90 because most planes of measurement are vertical, change measurement plane has dip.
+Dataelong$scanPitch <- pitchOnPlane(a=Dataelong$dip, t=90, u=Dataelong$acuteAngleScan)
+
+#Calculate true displacement. Uses a loop to calculate the true displacement across rows. 
+res <- NULL
+for(i in 1:nrow(Dataelong)){
+  temp <- trueDisplacement(g=Dataelong[i,"linPitch"], b=Dataelong[i,"beddingPitch"], p=Dataelong[i,"scanPitch"], Sm=Dataelong[i,"offset"])
+  res <- c(res, temp)
+}
+Dataelong$trueDisplacement <- res
+
+#project true displacement onto the direction of max elongation. 
+#Calculate pitch of max elongation orientation. t=90 because we imagine max elong direction to be a vertical plane. 
+Dataelong$elongPitch <- pitchOnPlane(a=Dataelong$dip, t=90, u=Dataelong$acuteAngleME)
+#Calculate plunge of max elongation orientation
+Dataelong$elongPlunge <- abs((asin(sin((Dataelong$dip*pi)/180)*sin((Dataelong$elongPitch*pi)/180))*180)/pi)
+#Calculate the apparent displacement along the direction of max elongation. 
+res <- NULL
+for(i in 1:nrow(Dataelong)){
+  temp <- appDisplacement(g=90, b=Dataelong[i,"beddingPitch"], p=Dataelong[i,"elongPitch"], S=Dataelong[i,"trueDisplacement"])
+  res <- c(res, temp)
+}
+Dataelong$appDisplacement <- res
+
+#Calculated heave on max elong orientation
+Dataelong$maxElongHeave <- Dataelong$appDisplacement*cos((Dataelong$elongPlunge*pi)/180)
+#Sum all max elong heaves to get total heave along the max elong. 
+dF <-sum(Dataelong$maxElongHeave, na.rm=TRUE) #Gives added length from faulting
+
+```
+
+To project the transect length onto maximum elongation orientation, you need to sketch out your transect, bounding faults, and orientation of maximum elongation to find the internal angles. 
+
+On a piece of paper, draw the line of your transect at its proper azimuth. Draw another line at the orientation of maximum elongation going through the center point of the transect line. Make sure to label your lines and it's also helpful to write the corresponding azimuths at each end of the lines (e.g., 030 on one end and 210 on the other). Finally, at each end of the transect, draw the strike for each bounding fault and extend the strike until it meets the max elongation line. Your sketch should show two closed triangles, with the transect and max elong lines intersecting at the middle and the two bounding faults closing each triangle. Label 1 triangle A and the other triangle B. You will be using this sketch to calculate the internal angles of each triangle. You don't need the angle between the transect and max elongation lines, but you need to calculate other two angles. In the code that follows, enter the following values in the code below.
+
+Lhalf - Enter half the transect length (e.g., transect is 120m, enter 60m)
+Aa - Inner angle between triangle A bounding fault and transect
+Ab - Inner angle between Triangle A bounding fault and max elong orientation
+Ba - Inner angle between Triangle B bounding fault and transect
+Bb - Inner angle between Triangle B bounding fault and max elong orientation
+
+Once values are entered, run code. It will calculate the final length of the transect projected on to the maximum elongation orientation (final length: Lf) and print the percent elongation (e).
+
+```{r Elongation 2}
+#Project the transect length onto the max elongation elongation. You need to provide the following information about the transect length and bounding fault angles. It helps to draw out the transect orientation and max elong orientation pinned in the center, with bounding fault strikes connecting both lines. This should create an hourglass-looking schematic. Determine the inner angles of the two triangles.
+Lhalf = 81 #half of the length of the transect
+Aa = 53 #transect strike-fault 1 strike
+Ab = 101 #
+Ba = 23 #
+Bb = 78 #
+Lf = (Lhalf*sin(Aa*pi/180))/sin(Ab*pi/180) + (Lhalf*sin(Ba*pi/180))/sin(Bb*pi/180) #Final length of transect on the orientation of maximum elongation.
+
+#elongation (Lf/Lf-dF)-1
+e = ((Lf/(Lf-dF))-1)*100 #elongation x 100 = % elongation
+print(e)
+```
+
+# Frequency plot and regression
+
+The elongation estimated above does not include the effect from small, unobservable faults. The following chunks of code follow Gross & Engelder (1995) to calculate added length from small faults. 
+
+First, you will need to re-run some code with the DataEnds data set so we include the offsets from the bounding faults. *Make sure to alter the code below to enter the max elongation direction (line 262) and only include the faults that are +-25 deg of the maximum elongation orientation (line 270).
+
+```{r log log plot 1}
+#We need to rerun some of the code using the DataEnds data frame to include the offsets from bounding faults. 
+DataEnds$acuteAngleBed <- acuteAngle(f=DataEnds$strike, x=DataEnds$bedding)
+DataEnds$bDipAdj <- adjDip(f=DataEnds$strike, x=DataEnds$bedding, d=DataEnds$beddingDip) 
+DataEnds$acuteAngleScanT <- acuteAngle(f=DataEnds$strike, x=DataEnds$scanline) 
+DataEnds$acuteAngleMET <- acuteAngle(f=DataEnds$strike, x=112) #Make sure you insert your max elong for x
+DataEnds$beddingPitch <- pitchOnPlane(a=DataEnds$dip, t=DataEnds$bDipAdj, u=DataEnds$acuteAngleBed)
+DataEnds$scanPitch <- pitchOnPlane(a=DataEnds$dip, t=90, u=DataEnds$acuteAngleScan)
+DataEndselong <- DataEnds[c(1,5,6,8,11:25),] #Make sure this is updated to remove faults outside of the +-25 deg threshold
+res <- NULL
+for(i in 1:nrow(DataEndselong)){
+  temp <- trueDisplacement(g=DataEndselong[i,"linPitch"], b=DataEndselong[i,"beddingPitch"], p=DataEndselong[i,"scanPitch"], Sm=DataEndselong[i,"offset"])
+  res <- c(res, temp)
+}
+DataEndselong$trueDisplacement <- res
+DataEndselong$elongPitch <- pitchOnPlane(a=DataEndselong$dip, t=90, u=DataEndselong$acuteAngleME)
+DataEndselong$elongPlunge <- abs((asin(sin((DataEndselong$dip*pi)/180)*sin((DataEndselong$elongPitch*pi)/180))*180)/pi)
+res <- NULL
+for(i in 1:nrow(DataEndselong)){
+  temp <- appDisplacement(g=90, b=DataEndselong[i,"beddingPitch"], p=DataEndselong[i,"elongPitch"], S=DataEndselong[i,"trueDisplacement"])
+  res <- c(res, temp)
+}
+DataEndselong$appDisplacement <- res
+DataEndselong$maxElongHeave <- DataEndselong$appDisplacement*cos((DataEndselong$elongPlunge*pi)/180)
+
+#create frequency plot to determine if fault array shows a linear relationship
+RevisedElong <- DataEndselong #All Faults
+RevisedElong$logMaxElongHeave <- log(RevisedElong$maxElongHeave) #calc log of max elong heave
+RevisedElongb <- RevisedElong[order(-RevisedElong$logMaxElongHeave),] #Descending order of heave
+
+```
+
+*It's ok if you receive a notice that "NaNs are produced". This is not an error.
+
+Next we create a frequency plot that is log fault number (1 to X) by log fault heave. Many fault arrays show a fractal relationship where there are very few faults with large offsets, and many small faults with small offsets. If so, a there should be a linear relationship when this data is plotted in a log-log plot. 
+
+First, put the number of faults in the RevisedElongb dataframe in the first line of code in the next chunk (1:N). Then run the code to show the fault frequency plot. 
+
+```{r log log plot 2}
+RevisedElongb$FaultNumber <-c(log(1:19)) #Put number of faults in the data frame. 
+ggplot(RevisedElongb, aes(logMaxElongHeave,FaultNumber)) + 
+  geom_point() +
+  labs(x="Log Heave (m)",
+       y="Log N") +
+  theme_bw() #log-log plot of fault heave and fault number. If there is a linear portion of the slope, use those faults in the next line of code for the regression (FYI, the first fault is in the lower right corner).
+```
+*non value rows will be removed and you may receive a warning "removed N rows containing missing values". That's ok. 
+
+Analyze the frequency plot (large faults are shown in the lower right corner and smaller faults trend to the upper left corner). If your data follows a fractal distribution, the middle portion of the data should form a linear slope. Since we typically undersample very large and very small faults, these areas drop off from the linear trend. However, the linear portion of the slope will be used to project the offsets we are missing from small, unobservable faults.
+
+Using the plot, determine which faults form the linear portion of the slope and should be used in the linear regression to find the slope (FYI for recording fault numbers, the first fault is in the lower right corner). Enter the data range in the first line of the following code and run the code (line 314). If there is not a linear portion to the slope, you either do not have enough data to determine the contribution from small faults or your fault array does not follow a fractal relationship. In this case, you cannot continue with the revised elongation analysis and should just report your elongation from the previous chunk. 
+
+*Analyze the plot and see if the linear slope agrees well with the data you chose. If not, you can change the data range until you feel that the slope fits the data well. 
+
+The last command from the log log plot 3 chunk gives you the output for the regression: Intercept and C value. If C is negative, record the absolute value and enter the value for the next chunk of code (line 337). If C is positive, you cannot continue because a positive C does not work with the next equations and you should just report the elongation from the elongation 2 code chunk. 
+
+```{r log log plot 3}
+RevisedElongc <- RevisedElongb[c(3:11),] #Include the points that create a slope and can be used for the regression.
+ggplot(RevisedElongb, aes(logMaxElongHeave,FaultNumber)) + 
+  geom_point() + 
+  geom_smooth(data = RevisedElongc,method = 'lm',se = F,fullrange = T) +
+  labs(x="Log Heave (m)",
+       y="Log N") +
+  theme_bw()
+lm(RevisedElongc$FaultNumber~RevisedElongc$logMaxElongHeave) #Regression data output, Intercept and your C statistic (this is the number you want). C should be negative
+```
+
+# Revised elongation
+
+With the C statistic, we can compute he: the added length from small faults. To compute this, enter the values for the following variables in the code below:
+
+hn- smallest HEAVE used in regression, this should be from the last fault used in your regression (fault N), you can find this value in the RevisedElongC data frame (under maxElongHeave). 
+C- C from above, remember to drop the negative.
+N- Number of faults used for the regression.
+
+Once these values are provided, run the chunk. It will calculate he, add he to dF, and calculate the revised percent elongation (er). You're done! 
+
+```{r revised elongation}
+
+hn = .20
+C = .7451
+N = 9
+he = (hn*((C/(1-C)))*(N+1)*((N/(N+1))^(1/C))) 
+
+
+dFr <- dF + he #Final change in length with small faults
+er = ((Lf/(Lf-dFr))-1)*100 #revised percent elongation
+print(er)
+```
+
+If you have problems with this code. 
